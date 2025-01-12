@@ -64,7 +64,7 @@ class MusicPlayer:
         self.playlists = {}
         self.now_playing_message = None
         self.last_activity_update = None
-        self.sc_client_id = '2t9loNQH90kzJcsFCODdigxfp325aq4z'
+        self.sc_client_id = 'a3e059563d7fd3372b49b37f00a00bcf'
         print("Music Player initialized")
         self.load_tracks()
         self.load_playlists()
@@ -125,20 +125,25 @@ class MusicPlayer:
     async def resolve_soundcloud_url(self, url):
         """Resolve SoundCloud URL to get the proper playlist URL"""
         try:
+            # First try the direct API
+            async with aiohttp.ClientSession() as session:
+                api_url = f'https://api-v2.soundcloud.com/playlists/{url.split("/")[-1]}?client_id={self.sc_client_id}'
+                print(f"Trying API URL: {api_url}")
+                async with session.get(api_url) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        return data.get('permalink_url'), data
+            
+            # If direct API fails, try resolve endpoint
             async with aiohttp.ClientSession() as session:
                 resolve_url = f'https://api-v2.soundcloud.com/resolve?url={url}&client_id={self.sc_client_id}'
+                print(f"Trying resolve URL: {resolve_url}")
                 async with session.get(resolve_url) as response:
                     if response.status == 200:
                         data = await response.json()
-                        if 'kind' in data:
-                            if data['kind'] == 'playlist':
-                                return data['permalink_url'], data
-                            else:
-                                print(f"Resolved data kind: {data['kind']}")
-                                return None, None
-                    else:
-                        print(f"Resolution failed with status {response.status}")
-                        return None, None
+                        return data.get('permalink_url'), data
+                    print(f"Resolution failed with status {response.status}")
+                    return None, None
         except Exception as e:
             print(f"Error resolving SoundCloud URL: {e}")
             return None, None
@@ -315,6 +320,19 @@ async def debug_url(ctx, url):
         await ctx.send(f"Redirected to: {response.url}")
     except Exception as e:
         await ctx.send(f"Error checking URL: {e}")
+
+@bot.command(name='playuser')
+async def play_user(ctx, username):
+    """Add and play all tracks from a SoundCloud user"""
+    message = await ctx.send(f"Loading tracks from user: {username}...")
+    url = f"https://soundcloud.com/{username}"
+    success, result = await player.add_playlist(url)
+    if success:
+        await message.edit(content=result)
+        if not player.is_playing:
+            await start(ctx)
+    else:
+        await message.edit(content=result)
 
 @bot.command(name='addplaylist', aliases=['apl'])
 async def add_playlist(ctx, url, *, name=None):
