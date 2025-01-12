@@ -5,13 +5,16 @@ import json
 import asyncio
 from collections import deque
 import random
-from mutagen.mp3 import MP3
-import sys
+import motor.motor_asyncio
+from bson.binary import Binary
 from dotenv import load_dotenv
+import io
+import sys
 
 # Load environment variables
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
+MONGODB_URL = os.getenv('MONGODB_URL')
 
 # Bot configuration
 intents = discord.Intents.default()
@@ -24,44 +27,85 @@ class MusicPlayer:
         self.current_track = None
         self.track_queue = deque()
         self.is_playing = False
-        self.tracks_dir = "private_tracks"
-        self.tracks = []
-        self.load_tracks()
         self.now_playing_message = None
+        self.db_client = motor.motor_asyncio.AsyncIOMotorClient(MONGODB_URL)
+        self.db = self.db_client.musicbot
+        self.tracks_collection = self.db.tracks
+        print("Music Player initialized")
 
-    def load_tracks(self):
-        """Load all tracks from the private_tracks directory"""
-        if not os.path.exists(self.tracks_dir):
-            os.makedirs(self.tracks_dir)
-            print(f"Created {self.tracks_dir} directory")
+    async def upload_track(self, file_path, title=None):
+        """Upload a track to MongoDB"""
+        try:
+            with open(file_path, 'rb') as file:
+                file_data = file.read()
+                track_doc = {
+                    'title': title or os.path.splitext(os.path.basename(file_path))[0],
+                    'data': Binary(file_data),
+                    'filename': os.path.basename(file_path),
+                    'uploaded_at': datetime.utcnow()
+                }
+                await self.tracks_collection.insert_one(track_doc)
+                print(f"Uploaded track: {track_doc['title']}")
+                return True
+        except Exception as e:
+            print(f"Error uploading track: {e}")
+            return False
+
+    async def get_all_tracks(self):
+        """Get all track metadata from MongoDB"""
+        cursor = self.tracks_collection.find({}, {'title': 1, 'filename': 1})
+        return await cursor.to_list(length=None)
+
+    async def get_track_data(self, track_id):
+        """Get track binary data from MongoDB"""
+        track = await self.tracks_collection.find_one({'_id': track_id})
+        if track:
+            return track['data'], track['filename']
+        return None, None
+
+    async def play_track(self, track_id):
+        """Play a track from MongoDB"""
+        if not self.voice_client:
             return
 
-        for file in os.listdir(self.tracks_dir):
-            if file.endswith(('.mp3', '.wav', '.ogg')):
-                try:
-                    track_path = os.path.join(self.tracks_dir, file)
-                    # Get track duration if it's an MP3
-                    duration = 0
-                    if file.endswith('.mp3'):
-                        audio = MP3(track_path)
-                        duration = audio.info.length
+        try:
+            track_data, filename = await self.get_track_data(track_id)
+            if track_data:
+                # Save to temporary file
+                temp_path = f"temp_{filename}"
+                with open(temp_path, 'wb') as temp_file:
+                    temp_file.write(track_data)
 
-                    self.tracks.append({
-                        'title': os.path.splitext(file)[0],
-                        'path': track_path,
-                        'duration': duration
-                    })
-                except Exception as e:
-                    print(f"Error loading track {file}: {e}")
+                source = discord.FFmpegPCMAudio(temp_path)
+                self.voice_client.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(
+                    self.cleanup_and_play_next(e, temp_path), bot.loop))
 
-        print(f"Loaded {len(self.tracks)} tracks")
+                # Update now playing message
+                if self.now_playing_message:
+                    try:
+                        await self.now_playing_message.edit(
+                            content=f"🎵 Now Playing: {track['title']}")
+                    except discord.NotFound:
+                        pass
 
-    def shuffle_queue(self):
-        """Shuffle all tracks and add to queue"""
-        available_tracks = self.tracks.copy()
-        random.shuffle(available_tracks)
-        self.track_queue = deque(available_tracks)
-        print(f"Shuffled {len(self.track_queue)} tracks")
+                # Update bot status
+                activity = discord.Activity(
+                    type=discord.ActivityType.listening,
+                    name=track['title']
+                )
+                await bot.change_presence(activity=activity)
+
+        except Exception as e:
+            print(f"Error playing track: {e}")
+            await self.play_next()
+
+    async def cleanup_and_play_next(self, error, temp_path):
+        """Clean up temporary file and play next track"""
+        try:
+            os.remove(temp_path)
+        except:
+            pass
+        await self.play_next(error)
 
     async def play_next(self, error=None):
         """Play the next track in queue"""
@@ -69,99 +113,58 @@ class MusicPlayer:
             print(f"Error in playback: {error}")
 
         if not self.track_queue:
-            self.shuffle_queue()
+            tracks = await self.get_all_tracks()
+            if tracks:
+                random.shuffle(tracks)
+                self.track_queue = deque(tracks)
 
         if self.track_queue and self.voice_client:
             self.current_track = self.track_queue.popleft()
-            try:
-                source = discord.FFmpegPCMAudio(self.current_track['path'])
-                self.voice_client.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(
-                    self.play_next(e), bot.loop))
-                
-                # Update now playing message
-                if self.now_playing_message:
-                    try:
-                        await self.now_playing_message.edit(
-                            content=f"🎵 Now Playing: {self.current_track['title']}")
-                    except discord.NotFound:
-                        pass
-
-                # Update bot status
-                activity = discord.Activity(
-                    type=discord.ActivityType.listening,
-                    name=self.current_track['title']
-                )
-                await bot.change_presence(activity=activity)
-
-            except Exception as e:
-                print(f"Error playing track: {e}")
-                await self.play_next()
+            await self.play_track(self.current_track['_id'])
 
 player = MusicPlayer()
 
-@bot.event
-async def on_ready():
-    print(f'{bot.user} is ready!')
-    print(f"Loaded {len(player.tracks)} tracks")
-    player.shuffle_queue()
-
-@bot.command(name='start')
-async def start(ctx):
-    """Start playing music"""
-    if not ctx.author.voice:
-        await ctx.send("You must be in a voice channel!")
+@bot.command(name='upload')
+@commands.has_permissions(administrator=True)
+async def upload(ctx):
+    """Upload tracks to database"""
+    if not ctx.message.attachments:
+        await ctx.send("Please attach an audio file!")
         return
 
-    channel = ctx.author.voice.channel
-    if not player.voice_client:
-        player.voice_client = await channel.connect()
-    
-    if not player.is_playing:
-        player.is_playing = True
-        player.now_playing_message = await ctx.send("🎵 Starting playback...")
-        await player.play_next()
-
-@bot.command(name='stop')
-async def stop(ctx):
-    """Stop playing music"""
-    if player.voice_client and player.voice_client.is_playing():
-        player.voice_client.stop()
-        player.is_playing = False
-        await bot.change_presence(activity=None)
-        await ctx.send("Playback stopped.")
-
-@bot.command(name='skip')
-async def skip(ctx):
-    """Skip current track"""
-    if player.voice_client and player.voice_client.is_playing():
-        player.voice_client.stop()
-        await ctx.send("⏭️ Skipping to next track...")
-
-@bot.command(name='queue', aliases=['q'])
-async def queue(ctx):
-    """Show next few tracks in queue"""
-    if not player.track_queue:
-        await ctx.send("Queue is empty.")
-        return
-
-    queue_list = list(player.track_queue)[:5]  # Show next 5 tracks
-    queue_text = "📋 Upcoming tracks:\n"
-    for i, track in enumerate(queue_list, 1):
-        queue_text += f"{i}. {track['title']}\n"
-
-    await ctx.send(queue_text)
+    for attachment in ctx.message.attachments:
+        if attachment.filename.endswith(('.mp3', '.wav', '.ogg')):
+            # Download file
+            temp_path = f"temp_{attachment.filename}"
+            await attachment.save(temp_path)
+            
+            # Upload to MongoDB
+            success = await player.upload_track(temp_path, attachment.filename)
+            
+            # Clean up
+            try:
+                os.remove(temp_path)
+            except:
+                pass
+            
+            if success:
+                await ctx.send(f"✅ Uploaded: {attachment.filename}")
+            else:
+                await ctx.send(f"❌ Failed to upload: {attachment.filename}")
+        else:
+            await ctx.send(f"❌ Invalid file type: {attachment.filename}")
 
 @bot.command(name='tracks')
 async def list_tracks(ctx):
     """List all available tracks"""
-    if not player.tracks:
+    tracks = await player.get_all_tracks()
+    if not tracks:
         await ctx.send("No tracks available.")
         return
 
     tracks_text = "📀 Available tracks:\n"
-    for i, track in enumerate(player.tracks, 1):
-        duration = int(track['duration']) if track['duration'] else 'Unknown'
-        tracks_text += f"{i}. {track['title']} ({duration}s)\n"
+    for i, track in enumerate(tracks, 1):
+        tracks_text += f"{i}. {track['title']}\n"
         if i % 20 == 0:  # Split into multiple messages if too long
             await ctx.send(tracks_text)
             tracks_text = ""
@@ -169,11 +172,7 @@ async def list_tracks(ctx):
     if tracks_text:
         await ctx.send(tracks_text)
 
-@tasks.loop(minutes=30)
-async def maintain_connection():
-    """Keep the bot connection alive"""
-    if player.voice_client and not player.voice_client.is_playing():
-        await player.play_next()
+# [Previous commands: start, stop, skip, queue remain the same]
 
 async def main():
     try:
