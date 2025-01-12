@@ -1,9 +1,6 @@
-# Ignore all files in private_tracks
-private_tracks/*
-!private_tracks/.gitkeep
-
 # Environment variables
 .env
+.env.*
 
 # Python
 __pycache__/
@@ -13,6 +10,10 @@ __pycache__/
 # Virtual environment
 venv/
 env/
+
+# Private tracks
+private_tracks/
+music/
 
 # OS files
 .DS_Store
