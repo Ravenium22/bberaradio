@@ -57,11 +57,44 @@ class MusicPlayer:
         self.music_path = "music"
         self.tracks = []
         self.playlists = {}  # Store playlists
-        self.load_tracks()
-        self.load_playlists()
         self.now_playing_message = None
         self.last_activity_update = None
         print("Music Player initialized")
+        self.load_tracks()
+        self.load_playlists()
+
+    def load_tracks(self):
+        """Load tracks from tracks.json"""
+        try:
+            if os.path.exists('tracks.json'):
+                with open('tracks.json', 'r') as f:
+                    track_data = json.load(f)
+                    for track in track_data:
+                        self.tracks.append(Track(**track))
+                print(f"Loaded {len(self.tracks)} tracks from tracks.json")
+        except Exception as e:
+            print(f"Error loading tracks: {e}")
+            self.tracks = []
+
+    def save_tracks(self):
+        """Save tracks to tracks.json"""
+        try:
+            tracks_to_save = [
+                {
+                    'title': track.title,
+                    'artist': track.artist,
+                    'duration': track.duration,
+                    'source_type': track.source_type,
+                    'source_path': track.source_path,
+                    'url': track.url
+                }
+                for track in self.tracks
+            ]
+            with open('tracks.json', 'w') as f:
+                json.dump(tracks_to_save, f, indent=2)
+            print("Tracks saved successfully")
+        except Exception as e:
+            print(f"Error saving tracks: {e}")
 
     def load_playlists(self):
         """Load playlists from playlists.json"""
@@ -128,6 +161,24 @@ class MusicPlayer:
             print(f"Error adding playlist: {e}")
             return False, f"Error adding playlist: {str(e)}"
 
+    def shuffle_tracks(self):
+        """Shuffle all available tracks"""
+        available_tracks = self.tracks.copy()
+        random.shuffle(available_tracks)
+        self.track_queue = deque(available_tracks)
+        print(f"Shuffled {len(self.track_queue)} tracks")
+
+    async def update_presence(self, track):
+        """Update bot's activity status"""
+        if track and (not self.last_activity_update or 
+                     (datetime.now() - self.last_activity_update).seconds > 5):
+            activity = discord.Activity(
+                type=discord.ActivityType.listening,
+                name=f"{track.title} - {track.artist}"
+            )
+            await bot.change_presence(activity=activity)
+            self.last_activity_update = datetime.now()
+
     async def load_playlist(self, name):
         """Load a specific playlist into the queue"""
         print(f"Loading playlist: {name}")
@@ -144,7 +195,7 @@ class MusicPlayer:
                 self.track_queue.append(track)
 
             print(f"Loaded {len(self.track_queue)} tracks from playlist: {name}")
-            random.shuffle(self.track_queue)
+            random.shuffle(list(self.track_queue))
             return True, f"Loaded {len(self.track_queue)} tracks from playlist: {name}"
         except Exception as e:
             print(f"Error loading playlist {name}: {e}")
@@ -189,7 +240,17 @@ class MusicPlayer:
             print(f"Error playing track {track.title}: {e}")
             await self.play_next()
 
-    # [Previous methods remain the same...]
+    async def play_next(self, error=None):
+        """Play the next track in queue"""
+        if error:
+            print(f"Error in playback: {error}")
+
+        if not self.track_queue:
+            self.shuffle_tracks()
+
+        if self.track_queue and self.voice_client:
+            self.current_track = self.track_queue.popleft()
+            await self.play_track(self.current_track)
 
 player = MusicPlayer()
 
@@ -228,7 +289,66 @@ async def list_playlists(ctx):
         playlist_text += f"- {name} ({len(tracks)} tracks)\n"
     await ctx.send(playlist_text)
 
-# [Previous commands remain the same...]
+@bot.command(name='start')
+async def start(ctx):
+    """Start the 24/7 music player"""
+    if not ctx.author.voice:
+        await ctx.send("You must be in a voice channel!")
+        return
+
+    channel = ctx.author.voice.channel
+    
+    if not player.voice_client:
+        player.voice_client = await channel.connect()
+    
+    if not player.is_playing:
+        player.is_playing = True
+        player.now_playing_message = await ctx.send("🎵 Starting playback...")
+        await player.play_next()
+
+@bot.command(name='stop')
+async def stop(ctx):
+    """Stop the music player"""
+    if player.voice_client and player.voice_client.is_playing():
+        player.voice_client.stop()
+        player.is_playing = False
+        await bot.change_presence(activity=None)
+        await ctx.send("Playback stopped.")
+
+@bot.command(name='skip')
+async def skip(ctx):
+    """Skip the current track"""
+    if player.voice_client and player.voice_client.is_playing():
+        player.voice_client.stop()
+        await ctx.send("⏭️ Skipping to next track...")
+
+@bot.command(name='nowplaying', aliases=['np'])
+async def now_playing(ctx):
+    """Display current track information"""
+    if player.current_track and player.is_playing:
+        await ctx.send(f"🎵 Now Playing: {player.current_track.title} - {player.current_track.artist}")
+    else:
+        await ctx.send("Nothing is playing right now.")
+
+@bot.command(name='queue', aliases=['q'])
+async def queue(ctx):
+    """Display next few tracks in queue"""
+    if not player.track_queue:
+        await ctx.send("Queue is empty.")
+        return
+
+    queue_list = list(player.track_queue)[:5]
+    queue_text = "📋 Upcoming tracks:\n"
+    for i, track in enumerate(queue_list, 1):
+        queue_text += f"{i}. {track.title} - {track.artist}\n"
+
+    await ctx.send(queue_text)
+
+@tasks.loop(minutes=30)
+async def maintain_connection():
+    """Keep the bot connection alive"""
+    if player.voice_client and not player.voice_client.is_playing():
+        await player.play_next()
 
 async def main():
     try:
