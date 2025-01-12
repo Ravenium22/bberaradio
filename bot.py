@@ -215,7 +215,7 @@ class MusicPlayer:
                     info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(track.url, download=False))
                     stream_url = info['url']
                     print("Got stream URL")
-                    source = discord.FFmpegPCMAudio(stream_url, **{
+                    source = discord.FFmpegPCMAudio(stream_url, executable='/nix/store/ffmpeg/bin/ffmpeg', **{
                         'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
                         'options': '-vn'
                     })
