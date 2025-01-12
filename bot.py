@@ -385,3 +385,21 @@ async def maintain_connection():
         await player.play_next()
 
 async def main():
+    try:
+        async with bot:
+            maintain_connection.start()
+            await bot.start(TOKEN)
+    except Exception as e:
+        print(f"Error starting bot: {e}")
+        sys.exit(1)
+
+# Run the bot
+if __name__ == "__main__":
+    print("Starting bot...")
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Bot shutdown by user.")
+    except Exception as e:
+        print(f"Fatal error: {e}")
+        sys.exit(1)
