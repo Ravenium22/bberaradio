@@ -53,20 +53,76 @@ class Track:
         self.source_path = source_path
         self.url = url
 
+import aiohttp
+
 class MusicPlayer:
     def __init__(self):
-        self.voice_client = None
-        self.current_track = None
-        self.track_queue = deque()
-        self.is_playing = False
-        self.music_path = "music"
-        self.tracks = []
-        self.playlists = {}  # Store playlists
-        self.now_playing_message = None
-        self.last_activity_update = None
-        print("Music Player initialized")
-        self.load_tracks()
-        self.load_playlists()
+        # ... (previous init code) ...
+        self.sc_client_id = '2t9loNQH90kzJcsFCODdigxfp325aq4z'
+
+    async def resolve_soundcloud_url(self, url):
+        """Resolve SoundCloud URL to get the proper playlist URL"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                # First, resolve the URL
+                resolve_url = f'https://api-v2.soundcloud.com/resolve?url={url}&client_id={self.sc_client_id}'
+                async with session.get(resolve_url) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if 'kind' in data:
+                            if data['kind'] == 'playlist':
+                                return data['permalink_url'], data
+                            else:
+                                print(f"Resolved data kind: {data['kind']}")
+                                return None, None
+                    else:
+                        print(f"Resolution failed with status {response.status}")
+                        return None, None
+        except Exception as e:
+            print(f"Error resolving SoundCloud URL: {e}")
+            return None, None
+
+    async def add_playlist(self, url, name=None):
+        """Add all tracks from a playlist"""
+        print(f"Attempting to add playlist from URL: {url}")
+        try:
+            if 'soundcloud.com' in url:
+                resolved_url, playlist_data = await self.resolve_soundcloud_url(url)
+                if resolved_url:
+                    url = resolved_url
+                    if playlist_data:
+                        # Process tracks directly from API response
+                        playlist_name = name or playlist_data.get('title', 'Unnamed Playlist')
+                        track_list = []
+                        
+                        for track in playlist_data.get('tracks', []):
+                            track_obj = Track(
+                                title=track.get('title', 'Unknown'),
+                                artist=track.get('user', {}).get('username', 'Unknown'),
+                                duration=track.get('duration', 0) // 1000,  # Convert ms to seconds
+                                source_type='soundcloud',
+                                source_path=track.get('stream_url', track.get('permalink_url')),
+                                url=track.get('permalink_url')
+                            )
+                            track_list.append({
+                                'title': track_obj.title,
+                                'artist': track_obj.artist,
+                                'duration': track_obj.duration,
+                                'source_type': track_obj.source_type,
+                                'source_path': track_obj.source_path,
+                                'url': track_obj.url
+                            })
+                            self.tracks.append(track_obj)
+                        
+                        if not track_list:
+                            return False, "No tracks found in playlist"
+                        
+                        self.playlists[playlist_name] = track_list
+                        self.save_playlists()
+                        return True, f"Added playlist: {playlist_name} with {len(track_list)} tracks"
+
+            # Fallback to yt-dlp if direct API fails
+            print("Falling back to yt-dlp...")
 
     def load_tracks(self):
         """Load tracks from tracks.json"""
