@@ -28,15 +28,19 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 
 # YT-DLP configuration for SoundCloud
 ydl_opts = {
-    'format': 'bestaudio/best',
-    'postprocessors': [{
-        'key': 'FFmpegExtractAudio',
-        'preferredcodec': 'opus',
-    }],
+    'format': 'http_mp3_128_url',
+    'postprocessors': [],
     'extract_flat': 'in_playlist',
     'quiet': True,
     'no_warnings': True,
-    'force_generic_extractor': False
+    'force_generic_extractor': False,
+    'prefer_insecure': True,
+    'allowed_extractors': ['soundcloud'],
+    'extractor_args': {
+        'soundcloud': {
+            'client_id': 'c2IqxhB7g6FtNi8oXOaIv1a3J8xVxBnm',
+        }
+    }
 }
 
 class Track:
@@ -215,10 +219,11 @@ class MusicPlayer:
                     info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(track.url, download=False))
                     stream_url = info['url']
                     print("Got stream URL")
-                    source = discord.FFmpegPCMAudio(stream_url, **{
-                        'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-                        'options': '-vn'
-                    })
+                    source = discord.FFmpegPCMAudio(
+                        stream_url,
+                        before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -allowed_extensions ALL',
+                        options='-vn -acodec copy'
+                    )
             else:
                 print("Playing local file")
                 source = discord.FFmpegPCMAudio(track.source_path)
