@@ -9,6 +9,10 @@ from mutagen.mp3 import MP3
 from mutagen.easyid3 import EasyID3
 import yt_dlp
 from datetime import datetime
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Bot configuration
 intents = discord.Intents.default()
@@ -118,7 +122,9 @@ class MusicPlayer:
 
     def shuffle_tracks(self):
         """Shuffle all available tracks"""
-        self.track_queue = deque(random.sample(self.tracks, len(self.tracks)))
+        available_tracks = self.tracks.copy()
+        random.shuffle(available_tracks)
+        self.track_queue = deque(available_tracks)
 
     async def update_presence(self, track):
         """Update bot's activity status"""
@@ -148,7 +154,7 @@ class MusicPlayer:
                     })
 
             self.voice_client.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(
-                self.play_next(e), bot.loop).result())
+                self.play_next(e), bot.loop))
             
             await self.update_presence(track)
 
@@ -254,7 +260,11 @@ async def maintain_connection():
     if player.voice_client and not player.voice_client.is_playing():
         await player.play_next()
 
+async def main():
+    async with bot:
+        maintain_connection.start()
+        await bot.start(os.getenv('DISCORD_TOKEN'))
+
 # Run the bot
 if __name__ == "__main__":
-    maintain_connection.start()
-    bot.run(os.getenv('DISCORD_TOKEN'))
+    asyncio.run(main())
