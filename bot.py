@@ -5,6 +5,7 @@ import json
 import asyncio
 from collections import deque
 import random
+import aiohttp
 from mutagen.mp3 import MP3
 from mutagen.easyid3 import EasyID3
 import yt_dlp
@@ -30,16 +31,15 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 ydl_opts = {
     'format': 'http_mp3_128_url',
     'extract_flat': True,
-    'quiet': False,  # Enable output for debugging
-    'no_warnings': False,  # Show warnings
-    'ignoreerrors': True,  # Skip unavailable tracks
+    'quiet': False,
+    'no_warnings': False,
+    'ignoreerrors': True,
     'extract_flat': 'in_playlist',
     'allowed_extractors': ['soundcloud'],
     'verbose': True,
     'extractor_args': {
         'soundcloud': {
-            'client_id': 'your_client_id',  # Replace with your client ID
-            'app_version': '1234',  # Update as needed
+            'client_id': '2t9loNQH90kzJcsFCODdigxfp325aq4z',
         }
     }
 }
@@ -49,80 +49,25 @@ class Track:
         self.title = title
         self.artist = artist
         self.duration = duration
-        self.source_type = source_type  # 'local' or 'soundcloud'
+        self.source_type = source_type
         self.source_path = source_path
         self.url = url
 
-import aiohttp
-
 class MusicPlayer:
     def __init__(self):
-        # ... (previous init code) ...
+        self.voice_client = None
+        self.current_track = None
+        self.track_queue = deque()
+        self.is_playing = False
+        self.music_path = "music"
+        self.tracks = []
+        self.playlists = {}
+        self.now_playing_message = None
+        self.last_activity_update = None
         self.sc_client_id = '2t9loNQH90kzJcsFCODdigxfp325aq4z'
-
-    async def resolve_soundcloud_url(self, url):
-        """Resolve SoundCloud URL to get the proper playlist URL"""
-        try:
-            async with aiohttp.ClientSession() as session:
-                # First, resolve the URL
-                resolve_url = f'https://api-v2.soundcloud.com/resolve?url={url}&client_id={self.sc_client_id}'
-                async with session.get(resolve_url) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if 'kind' in data:
-                            if data['kind'] == 'playlist':
-                                return data['permalink_url'], data
-                            else:
-                                print(f"Resolved data kind: {data['kind']}")
-                                return None, None
-                    else:
-                        print(f"Resolution failed with status {response.status}")
-                        return None, None
-        except Exception as e:
-            print(f"Error resolving SoundCloud URL: {e}")
-            return None, None
-
-    async def add_playlist(self, url, name=None):
-        """Add all tracks from a playlist"""
-        print(f"Attempting to add playlist from URL: {url}")
-        try:
-            if 'soundcloud.com' in url:
-                resolved_url, playlist_data = await self.resolve_soundcloud_url(url)
-                if resolved_url:
-                    url = resolved_url
-                    if playlist_data:
-                        # Process tracks directly from API response
-                        playlist_name = name or playlist_data.get('title', 'Unnamed Playlist')
-                        track_list = []
-                        
-                        for track in playlist_data.get('tracks', []):
-                            track_obj = Track(
-                                title=track.get('title', 'Unknown'),
-                                artist=track.get('user', {}).get('username', 'Unknown'),
-                                duration=track.get('duration', 0) // 1000,  # Convert ms to seconds
-                                source_type='soundcloud',
-                                source_path=track.get('stream_url', track.get('permalink_url')),
-                                url=track.get('permalink_url')
-                            )
-                            track_list.append({
-                                'title': track_obj.title,
-                                'artist': track_obj.artist,
-                                'duration': track_obj.duration,
-                                'source_type': track_obj.source_type,
-                                'source_path': track_obj.source_path,
-                                'url': track_obj.url
-                            })
-                            self.tracks.append(track_obj)
-                        
-                        if not track_list:
-                            return False, "No tracks found in playlist"
-                        
-                        self.playlists[playlist_name] = track_list
-                        self.save_playlists()
-                        return True, f"Added playlist: {playlist_name} with {len(track_list)} tracks"
-
-            # Fallback to yt-dlp if direct API fails
-            print("Falling back to yt-dlp...")
+        print("Music Player initialized")
+        self.load_tracks()
+        self.load_playlists()
 
     def load_tracks(self):
         """Load tracks from tracks.json"""
@@ -177,14 +122,73 @@ class MusicPlayer:
         except Exception as e:
             print(f"Error saving playlists: {e}")
 
+    async def resolve_soundcloud_url(self, url):
+        """Resolve SoundCloud URL to get the proper playlist URL"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                resolve_url = f'https://api-v2.soundcloud.com/resolve?url={url}&client_id={self.sc_client_id}'
+                async with session.get(resolve_url) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if 'kind' in data:
+                            if data['kind'] == 'playlist':
+                                return data['permalink_url'], data
+                            else:
+                                print(f"Resolved data kind: {data['kind']}")
+                                return None, None
+                    else:
+                        print(f"Resolution failed with status {response.status}")
+                        return None, None
+        except Exception as e:
+            print(f"Error resolving SoundCloud URL: {e}")
+            return None, None
+
     async def add_playlist(self, url, name=None):
         """Add all tracks from a playlist"""
         print(f"Attempting to add playlist from URL: {url}")
         try:
+            if 'soundcloud.com' in url:
+                resolved_url, playlist_data = await self.resolve_soundcloud_url(url)
+                if resolved_url:
+                    url = resolved_url
+                    if playlist_data:
+                        playlist_name = name or playlist_data.get('title', 'Unnamed Playlist')
+                        track_list = []
+                        
+                        for track in playlist_data.get('tracks', []):
+                            track_obj = Track(
+                                title=track.get('title', 'Unknown'),
+                                artist=track.get('user', {}).get('username', 'Unknown'),
+                                duration=track.get('duration', 0) // 1000,
+                                source_type='soundcloud',
+                                source_path=track.get('stream_url', track.get('permalink_url')),
+                                url=track.get('permalink_url')
+                            )
+                            track_list.append({
+                                'title': track_obj.title,
+                                'artist': track_obj.artist,
+                                'duration': track_obj.duration,
+                                'source_type': track_obj.source_type,
+                                'source_path': track_obj.source_path,
+                                'url': track_obj.url
+                            })
+                            self.tracks.append(track_obj)
+                        
+                        if not track_list:
+                            return False, "No tracks found in playlist"
+                        
+                        self.playlists[playlist_name] = track_list
+                        self.save_playlists()
+                        return True, f"Added playlist: {playlist_name} with {len(track_list)} tracks"
+
+            # Fallback to yt-dlp
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 print("Extracting playlist info...")
                 info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
                 
+                if not info:
+                    return False, "Could not extract playlist information"
+
                 if 'entries' not in info:
                     print("No entries found in playlist")
                     return False, "No tracks found in playlist"
@@ -200,8 +204,8 @@ class MusicPlayer:
                             artist=entry.get('uploader', 'Unknown'),
                             duration=entry.get('duration', 0),
                             source_type='soundcloud',
-                            source_path=entry['url'],
-                            url=entry['url']
+                            source_path=entry.get('url', entry.get('webpage_url')),
+                            url=entry.get('original_url', entry.get('webpage_url'))
                         )
                         track_list.append({
                             'title': track.title,
@@ -220,47 +224,9 @@ class MusicPlayer:
 
         except Exception as e:
             print(f"Error adding playlist: {e}")
+            import traceback
+            traceback.print_exc()
             return False, f"Error adding playlist: {str(e)}"
-
-    def shuffle_tracks(self):
-        """Shuffle all available tracks"""
-        available_tracks = self.tracks.copy()
-        random.shuffle(available_tracks)
-        self.track_queue = deque(available_tracks)
-        print(f"Shuffled {len(self.track_queue)} tracks")
-
-    async def update_presence(self, track):
-        """Update bot's activity status"""
-        if track and (not self.last_activity_update or 
-                     (datetime.now() - self.last_activity_update).seconds > 5):
-            activity = discord.Activity(
-                type=discord.ActivityType.listening,
-                name=f"{track.title} - {track.artist}"
-            )
-            await bot.change_presence(activity=activity)
-            self.last_activity_update = datetime.now()
-
-    async def load_playlist(self, name):
-        """Load a specific playlist into the queue"""
-        print(f"Loading playlist: {name}")
-        if name not in self.playlists:
-            print(f"Playlist not found: {name}")
-            return False, "Playlist not found"
-
-        try:
-            playlist_tracks = self.playlists[name]
-            self.track_queue.clear()
-            
-            for track_data in playlist_tracks:
-                track = Track(**track_data)
-                self.track_queue.append(track)
-
-            print(f"Loaded {len(self.track_queue)} tracks from playlist: {name}")
-            random.shuffle(list(self.track_queue))
-            return True, f"Loaded {len(self.track_queue)} tracks from playlist: {name}"
-        except Exception as e:
-            print(f"Error loading playlist {name}: {e}")
-            return False, f"Error loading playlist: {str(e)}"
 
     async def play_track(self, track):
         """Play a specific track"""
@@ -276,11 +242,10 @@ class MusicPlayer:
                     info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(track.url, download=False))
                     stream_url = info['url']
                     print("Got stream URL")
-                    source = discord.FFmpegPCMAudio(
-                        stream_url,
-                        before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -allowed_extensions ALL',
-                        options='-vn -acodec copy'
-                    )
+                    source = discord.FFmpegPCMAudio(stream_url, **{
+                        'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+                        'options': '-vn'
+                    })
             else:
                 print("Playing local file")
                 source = discord.FFmpegPCMAudio(track.source_path)
@@ -302,6 +267,24 @@ class MusicPlayer:
             print(f"Error playing track {track.title}: {e}")
             await self.play_next()
 
+    def shuffle_tracks(self):
+        """Shuffle all available tracks"""
+        available_tracks = self.tracks.copy()
+        random.shuffle(available_tracks)
+        self.track_queue = deque(available_tracks)
+        print(f"Shuffled {len(self.track_queue)} tracks")
+
+    async def update_presence(self, track):
+        """Update bot's activity status"""
+        if track and (not self.last_activity_update or 
+                     (datetime.now() - self.last_activity_update).seconds > 5):
+            activity = discord.Activity(
+                type=discord.ActivityType.listening,
+                name=f"{track.title} - {track.artist}"
+            )
+            await bot.change_presence(activity=activity)
+            self.last_activity_update = datetime.now()
+
     async def play_next(self, error=None):
         """Play the next track in queue"""
         if error:
@@ -316,6 +299,7 @@ class MusicPlayer:
 
 player = MusicPlayer()
 
+# Bot Commands
 @bot.event
 async def on_ready():
     print(f'{bot.user} is ready!')
@@ -338,29 +322,6 @@ async def add_playlist(ctx, url, *, name=None):
     message = await ctx.send("Adding playlist, please wait...")
     success, result = await player.add_playlist(url, name)
     await message.edit(content=result)
-
-@bot.command(name='playlist', aliases=['pl'])
-async def load_playlist(ctx, *, name):
-    """Load and play a saved playlist"""
-    success, result = await player.load_playlist(name)
-    if success:
-        await ctx.send(result)
-        if not player.is_playing:
-            await start(ctx)
-    else:
-        await ctx.send(result)
-
-@bot.command(name='playlists', aliases=['pls'])
-async def list_playlists(ctx):
-    """List all saved playlists"""
-    if not player.playlists:
-        await ctx.send("No playlists saved.")
-        return
-
-    playlist_text = "📋 Saved playlists:\n"
-    for name, tracks in player.playlists.items():
-        playlist_text += f"- {name} ({len(tracks)} tracks)\n"
-    await ctx.send(playlist_text)
 
 @bot.command(name='start')
 async def start(ctx):
@@ -403,16 +364,6 @@ async def now_playing(ctx):
     else:
         await ctx.send("Nothing is playing right now.")
 
-@bot.command(name='debug')
-async def debug(ctx):
-    """Check FFmpeg installation"""
-    import subprocess
-    try:
-        version = subprocess.check_output(['ffmpeg', '-version'])
-        await ctx.send(f"FFmpeg found: ```{version.decode()[:1000]}```")
-    except Exception as e:
-        await ctx.send(f"FFmpeg error: {str(e)}")
-
 @bot.command(name='queue', aliases=['q'])
 async def queue(ctx):
     """Display next few tracks in queue"""
@@ -434,20 +385,3 @@ async def maintain_connection():
         await player.play_next()
 
 async def main():
-    try:
-        async with bot:
-            maintain_connection.start()
-            await bot.start(TOKEN)
-    except Exception as e:
-        print(f"Error starting bot: {e}")
-        sys.exit(1)
-
-if __name__ == "__main__":
-    print("Starting bot...")
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Bot shutdown by user.")
-    except Exception as e:
-        print(f"Fatal error: {e}")
-        sys.exit(1)
