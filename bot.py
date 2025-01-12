@@ -215,7 +215,7 @@ class MusicPlayer:
                     info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(track.url, download=False))
                     stream_url = info['url']
                     print("Got stream URL")
-                    source = discord.FFmpegPCMAudio(stream_url, executable='/nix/store/ffmpeg/bin/ffmpeg', **{
+                    source = discord.FFmpegPCMAudio(stream_url, **{
                         'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
                         'options': '-vn'
                     })
@@ -329,6 +329,16 @@ async def now_playing(ctx):
         await ctx.send(f"🎵 Now Playing: {player.current_track.title} - {player.current_track.artist}")
     else:
         await ctx.send("Nothing is playing right now.")
+
+@bot.command(name='debug')
+async def debug(ctx):
+    """Check FFmpeg installation"""
+    import subprocess
+    try:
+        version = subprocess.check_output(['ffmpeg', '-version'])
+        await ctx.send(f"FFmpeg found: ```{version.decode()[:1000]}```")
+    except Exception as e:
+        await ctx.send(f"FFmpeg error: {str(e)}")
 
 @bot.command(name='queue', aliases=['q'])
 async def queue(ctx):
