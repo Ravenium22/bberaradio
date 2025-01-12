@@ -29,16 +29,17 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 # YT-DLP configuration for SoundCloud
 ydl_opts = {
     'format': 'http_mp3_128_url',
-    'postprocessors': [],
+    'extract_flat': True,
+    'quiet': False,  # Enable output for debugging
+    'no_warnings': False,  # Show warnings
+    'ignoreerrors': True,  # Skip unavailable tracks
     'extract_flat': 'in_playlist',
-    'quiet': True,
-    'no_warnings': True,
-    'force_generic_extractor': False,
-    'prefer_insecure': True,
     'allowed_extractors': ['soundcloud'],
+    'verbose': True,
     'extractor_args': {
         'soundcloud': {
-            'client_id': 'c2IqxhB7g6FtNi8oXOaIv1a3J8xVxBnm',
+            'client_id': 'your_client_id',  # Replace with your client ID
+            'app_version': '1234',  # Update as needed
         }
     }
 }
@@ -263,6 +264,17 @@ player = MusicPlayer()
 async def on_ready():
     print(f'{bot.user} is ready!')
     player.shuffle_tracks()
+
+@bot.command(name='debugurl')
+async def debug_url(ctx, url):
+    """Debug URL resolution"""
+    await ctx.send(f"Checking URL: {url}")
+    try:
+        import requests
+        response = requests.head(url, allow_redirects=True)
+        await ctx.send(f"Redirected to: {response.url}")
+    except Exception as e:
+        await ctx.send(f"Error checking URL: {e}")
 
 @bot.command(name='addplaylist', aliases=['apl'])
 async def add_playlist(ctx, url, *, name=None):
